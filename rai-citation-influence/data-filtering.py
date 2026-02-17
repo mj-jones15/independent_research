@@ -17,7 +17,7 @@ PLOT_TAIL = f"{OUTPUT_DIR}/citation_tail_histogram.png"
 PLOT_LOG = f"{OUTPUT_DIR}/citation_log_distribution.png"
 PLOT_PERCENTILES = f"{OUTPUT_DIR}/citation_percentile_buckets.png"
 PLOT_LORENZ = f"{OUTPUT_DIR}/citation_lorenz_curve.png"
-ENRICHED_CSV = f"{OUTPUT_DIR}/aies_papers_enriched.csv"
+ENRICHED_CSV = "./data/aies_papers_enriched.csv"
 
 # ============================================================
 # LOAD DATA
