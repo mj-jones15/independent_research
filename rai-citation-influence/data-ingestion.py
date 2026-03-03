@@ -13,9 +13,10 @@ SEMANTIC_SCHOLAR_API_KEY = os.getenv("SEMANTIC_SCHOLAR_API_KEY", "")
 SEMANTIC_SCHOLAR_API_URL = "https://api.semanticscholar.org/graph/v1/paper/DOI:"
 
 BIBTEX_DIR = "./bibtex-proceedings-2018-2023"
-OUTPUT_DIR = "./output"
+OUTPUT_DIR = "./data"
 OUTPUT_CSV = f"{OUTPUT_DIR}/aies_papers.csv"
 FAILED_DOI_CSV = f"{OUTPUT_DIR}/failed_dois.csv"
+ENRICHED_CSV = f"{OUTPUT_DIR}/aies_papers_enriched.csv"
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -96,7 +97,7 @@ def semantic_scholar_request_by_doi(doi: str) -> Optional[dict]:
     """
     url = SEMANTIC_SCHOLAR_API_URL + doi
     params = {
-        "fields": "title,authors,year,venue,externalIds,citationCount,url,paperId"
+        "fields": "title,authors,year,venue,externalIds,citationCount,url,paperId,abstract"
     }
 
     while True:
@@ -162,11 +163,22 @@ def run_pipeline():
             "url": result.get("url"),
             "citation_count": result.get("citationCount"),
             "semantic_scholar_id": result.get("paperId"),
+            "abstract": result.get("abstract")
         })
 
     # ---- Write outputs ----
-    df = pd.DataFrame(records).sort_values(by=["year", "doi"])
-    df.to_csv(OUTPUT_CSV, index=False)
+    new_df = pd.DataFrame(records).sort_values(by=["year", "doi"])
+
+    if os.path.exists(OUTPUT_CSV):
+        existing_df = pd.read_csv(OUTPUT_CSV)
+        combined_df = pd.concat([existing_df, new_df], ignore_index=True)
+        combined_df.drop_duplicates(subset=["doi"], keep="last", inplace=True)
+        combined_df.sort_values(by=["year", "doi"], inplace=True)
+        combined_df.to_csv(OUTPUT_CSV, index=False)
+        combined_df.to_csv(ENRICHED_CSV, index=False)
+    else:
+        new_df.to_csv(OUTPUT_CSV, index=False)
+        new_df.to_csv(ENRICHED_CSV, index=False)
 
     failed_df = pd.DataFrame(failed_dois)
     failed_df.to_csv(FAILED_DOI_CSV, index=False)
@@ -176,6 +188,7 @@ def run_pipeline():
     print(f"Papers found: {len(records)}")
     print(f"DOIs not found in Semantic Scholar: {len(failed_dois)}")
     print(f"Main output written to: {OUTPUT_CSV}")
+    print(f"Enriched output written to: {ENRICHED_CSV}")
     print(f"Failed DOI log written to: {FAILED_DOI_CSV}")
     print("=================================================\n")
 
