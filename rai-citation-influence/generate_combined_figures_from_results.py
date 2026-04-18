@@ -8,6 +8,8 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet
 from adjustText import adjust_text
 
+from policy_labels import apply_label, POLICY_LABELS
+
 CHUNKED_POLICY_CSV = "./data/policy_documents/policy_keyword_scores_all.csv"
 ABSTRACT_SIMILARITY_CSV = "./data/final_papers_with_keyword_similarities.csv"
 
@@ -100,6 +102,8 @@ connection_df = pd.DataFrame({
     "Research_Foundation_Strength": grounding_scores,
     "Research_Consensus_Count": coverage_count
 }).sort_values(by="Research_Foundation_Strength", ascending=False)
+# Optionally, filter out outlier
+connection_df = connection_df[~connection_df.index.str.contains("general-data-protection-regulation", case=False, na=False)]
 
 category_score_df = compute_category_scores(chunk_df, keyword_to_category)
 connection_df["Top_Category"] = category_score_df.idxmax(axis=1)
@@ -136,12 +140,12 @@ scatter = plt.scatter(
 # Label ALL policies — adjustText will prevent overlap
 texts = []
 for i, txt in enumerate(connection_df.index):
-    short_name = txt.split("/")[-1].replace(".pdf", "")
-    texts.append(plt.text(
+        short_name = apply_label(txt)
+        texts.append(plt.text(
         connection_df["Research_Consensus_Count"].iloc[i],
         connection_df["Research_Foundation_Strength"].iloc[i],
         short_name,
-        fontsize=7,
+        fontsize=17,
         ha="center"
     ))
 
@@ -197,7 +201,7 @@ elements = []
 all_policies = connection_df.index.tolist()
 
 for policy in all_policies:
-    short_name = policy.split("/")[-1].replace(".pdf", "")
+    short_name = apply_label(policy)
     foundation = connection_df.loc[policy, "Research_Foundation_Strength"]
     consensus = connection_df.loc[policy, "Research_Consensus_Count"]
 
@@ -302,11 +306,13 @@ print(f"[SANITY] Abstracts with category assignment: {len(known_titles)} / {alig
 M_df.columns = [abstract_top_category[t] for t in M_df.columns]
 policy_category_matrix = M_df.T.groupby(level=0).mean().T  # (policies × categories)
 
-# Shorten policy index labels for readability
-policy_category_matrix.index = [
-    idx.split("/")[-1].replace(".pdf", "")
-    for idx in policy_category_matrix.index
+# Sort policies by their mean alignment score across all categories (descending)
+policy_category_matrix = policy_category_matrix.loc[
+    policy_category_matrix.mean(axis=1).sort_values(ascending=False).index
 ]
+
+# Use the same labeling logic as Figure 1 for consistency
+policy_category_matrix.index = [apply_label(idx) for idx in policy_category_matrix.index]
 
 # Plot heatmap
 plt.figure(figsize=(10, max(6, len(policy_category_matrix) * 0.35)))
@@ -326,8 +332,231 @@ plt.title(
 )
 plt.xlabel("RAI Category", fontsize=11)
 plt.ylabel("Policy Document", fontsize=11)
+plt.xticks(fontsize=8)   # shrink x-axis labels (categories)
 plt.tight_layout()
 plt.savefig("./data/results/policy_cross_research_category_heatmap.png", dpi=150)
 plt.show()
 
 print("[DONE] Deep-dive PDF generated at ./data/results/policy_deep_dive.pdf")
+
+
+# ============================================================
+# 8. FIND MID-RANGE (≈0.7) EXAMPLES FOR CONTRAST
+# ============================================================
+
+LOWER_BOUND = 0.65
+UPPER_BOUND = 0.75
+
+contrast_examples = []
+
+for policy in connection_df.index:
+    policy_chunks = chunk_df[chunk_df["document"] == policy]
+
+    # Filter for mid-range similarity scores
+    mid_chunks = policy_chunks[
+        (policy_chunks["similarity"] >= LOWER_BOUND) &
+        (policy_chunks["similarity"] <= UPPER_BOUND)
+    ]
+
+    if len(mid_chunks) == 0:
+        continue
+
+    # Take best of the mid-range
+    top_mid = mid_chunks.nlargest(2, "similarity")
+
+    for _, row in top_mid.iterrows():
+        contrast_examples.append({
+            "policy": policy,
+            "keyword": row["keyword"],
+            "score": row["similarity"],
+            "chunk": row.get("chunk_preview", "")[:300]
+        })
+
+# Convert to DataFrame
+contrast_df = pd.DataFrame(contrast_examples)
+
+# Save for inspection
+contrast_df.to_csv("./data/results/midrange_similarity_examples.csv", index=False)
+
+print("[DONE] Mid-range similarity examples saved.")
+
+
+# ============================================================
+# 9. RANKED ALIGNMENT CURVE: High vs Low Scorer
+# ============================================================
+from reportlab.platypus import Image as RLImage
+import io
+
+high_policy = connection_df.index[0]  # best grounded policy
+low_policy = connection_df.index[-1]  # worst grounded policy
+
+CURVE_OUTPUT = "./data/results/alignment_curve_comparison.png"
+CURVE_PDF_OUTPUT = "./data/results/alignment_curve_report.pdf"
+TOP_K_CURVE = 50  # how many top abstracts to show on the curve
+
+high_label = apply_label(high_policy)
+low_label = apply_label(low_policy)
+
+# Pull ranked alignment scores directly from the matrix
+high_scores = alignment_df.loc[high_policy].sort_values(ascending=False).reset_index(drop=True)
+low_scores  = alignment_df.loc[low_policy].sort_values(ascending=False).reset_index(drop=True)
+
+high_top = high_scores.iloc[:TOP_K_CURVE]
+low_top  = low_scores.iloc[:TOP_K_CURVE]
+
+# ---- Figure: Ranked Alignment Curve ----
+fig, ax = plt.subplots(figsize=(11, 6))
+
+ax.plot(range(1, TOP_K_CURVE + 1), high_top.values,
+        color="#55A868", linewidth=2.5, marker="o", markersize=4,
+        label=high_label)
+
+ax.plot(range(1, TOP_K_CURVE + 1), low_top.values,
+        color="#C44E52", linewidth=2.5, marker="o", markersize=4,
+        linestyle="--", label=low_label)
+
+# Mark the threshold line
+ax.axhline(threshold, color="black", linewidth=1, linestyle=":",
+           label=f"Consensus threshold ({threshold:.2f})")
+
+# Shade the area above threshold for the high scorer
+ax.fill_between(range(1, TOP_K_CURVE + 1), high_top.values, threshold,
+                where=(high_top.values > threshold),
+                alpha=0.12, color="#55A868", label="Egypt above threshold")
+
+# Annotate paper counts above threshold
+high_above = (high_top.values > threshold).sum()
+low_above  = (low_top.values > threshold).sum()
+
+ax.annotate(f"{high_above} papers above threshold",
+            xy=(high_above, threshold),
+            xytext=(high_above + 2, threshold + 0.3),
+            fontsize=9, color="#55A868",
+            arrowprops=dict(arrowstyle="->", color="#55A868", lw=1))
+
+if low_above > 0:
+    ax.annotate(f"{low_above} papers above threshold",
+                xy=(low_above, threshold),
+                xytext=(low_above + 2, threshold + 0.15),
+                fontsize=9, color="#C44E52",
+                arrowprops=dict(arrowstyle="->", color="#C44E52", lw=1))
+else:
+    ax.annotate("0 papers above threshold",
+                xy=(1, low_top.values[0]),
+                xytext=(8, low_top.values[0] + 0.1),
+                fontsize=9, color="#C44E52",
+                arrowprops=dict(arrowstyle="->", color="#C44E52", lw=1))
+
+ax.set_xlabel("Abstract Rank (1 = strongest match)", fontsize=11)
+ax.set_ylabel("Alignment Score", fontsize=11)
+ax.set_title(
+    "Research Grounding: Top-50 Abstract Alignment Scores\n"
+    "How quickly does research support drop off?",
+    fontsize=13
+)
+ax.legend(fontsize=9, loc="upper right")
+ax.grid(True, linestyle="--", alpha=0.4)
+plt.tight_layout()
+plt.savefig(CURVE_OUTPUT, dpi=150)
+plt.show()
+print(f"[DONE] Curve figure saved to {CURVE_OUTPUT}")
+
+# ---- PDF Report: Curve + 20th-place comparison table ----
+# Get the actual abstract title and score at rank 20 for each
+rank_n = 20
+
+high_ranked = alignment_df.loc[high_policy].sort_values(ascending=False)
+low_ranked  = alignment_df.loc[low_policy].sort_values(ascending=False)
+
+def get_rank_n(ranked_series, n):
+    if len(ranked_series) >= n:
+        return ranked_series.index[n-1], ranked_series.iloc[n-1]
+    return "N/A", 0.0
+
+high_20_title, high_20_score = get_rank_n(high_ranked, rank_n)
+low_20_title,  low_20_score  = get_rank_n(low_ranked,  rank_n)
+
+# Also get abstract text for each if available
+def get_abstract(title):
+    matches = abstract_df[abstract_df["title"] == title]
+    if matches.empty:
+        return ""
+    text = str(matches.iloc[0].get("abstract", ""))
+    return text[:300] + "…" if len(text) > 300 else text
+
+high_20_abstract = get_abstract(high_20_title)
+low_20_abstract  = get_abstract(low_20_title)
+
+# Build PDF
+curve_doc = SimpleDocTemplate(
+    CURVE_PDF_OUTPUT,
+    rightMargin=45, leftMargin=45, topMargin=45, bottomMargin=45
+)
+curve_elements = []
+
+curve_elements.append(Paragraph(
+    "Research Grounding: Where the Difference Actually Lives",
+    styles["Heading1"]
+))
+curve_elements.append(Paragraph(
+    "Both documents use strong AI governance language. The difference is not in "
+    "how well their text matches RAI keywords — it is in how many research abstracts "
+    "are genuinely aligned with their content through the semantic matrix.",
+    styles["Normal"]
+))
+curve_elements.append(Spacer(1, 12))
+
+# Embed the curve figure
+curve_elements.append(RLImage(CURVE_OUTPUT, width=6.5*inch, height=3.8*inch))
+curve_elements.append(Spacer(1, 14))
+
+# Rank-20 comparison table
+curve_elements.append(Paragraph(
+    f"<b>What does the {rank_n}th-best abstract match look like for each policy?</b>",
+    styles["Heading2"]
+))
+curve_elements.append(Spacer(1, 6))
+
+rank_table_data = [
+    ["", f"✦ {high_label}", f"✧ {low_label}"],
+    ["Rank-20 alignment score",
+     f"{high_20_score:.4f}",
+     f"{low_20_score:.4f}"],
+    ["Abstract title",
+     high_20_title[:80] + ("…" if len(high_20_title) > 80 else ""),
+     low_20_title[:80]  + ("…" if len(low_20_title)  > 80 else "")],
+    ["Abstract excerpt",
+     high_20_abstract,
+     low_20_abstract],
+]
+
+rank_table = Table(rank_table_data, colWidths=[1.5*inch, 2.7*inch, 2.7*inch])
+rank_table.setStyle(TableStyle([
+    ("BACKGROUND",    (0, 0), (-1, 0),  colors.HexColor("#2C3E50")),
+    ("TEXTCOLOR",     (0, 0), (-1, 0),  colors.white),
+    ("FONTNAME",      (0, 0), (-1, 0),  "Helvetica-Bold"),
+    ("FONTSIZE",      (0, 0), (-1, -1), 8),
+    ("BACKGROUND",    (0, 1), (0, -1),  colors.HexColor("#EEEEEE")),
+    ("FONTNAME",      (0, 1), (0, -1),  "Helvetica-Bold"),
+    ("ROWBACKGROUNDS",(1, 1), (-1, -1), [colors.white, colors.HexColor("#F9F9F9")]),
+    ("GRID",          (0, 0), (-1, -1), 0.4, colors.HexColor("#CCCCCC")),
+    ("VALIGN",        (0, 0), (-1, -1), "TOP"),
+    ("TOPPADDING",    (0, 0), (-1, -1), 5),
+    ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+    # Highlight the score row
+    ("BACKGROUND",    (1, 1), (1, 1),   colors.HexColor("#D5E8D4")),  # green for high
+    ("BACKGROUND",    (2, 1), (2, 1),   colors.HexColor("#F8CECC")),  # red for low
+]))
+curve_elements.append(rank_table)
+curve_elements.append(Spacer(1, 10))
+
+curve_elements.append(Paragraph(
+    f"The rank-20 abstract for {high_label} scores {high_20_score:.4f} — "
+    f"still above the consensus threshold of {threshold:.4f}. "
+    f"For {low_label}, the rank-20 abstract scores {low_20_score:.4f}, "
+    f"well below that threshold. This is the grounding gap.",
+    styles["Normal"]
+))
+
+curve_doc.build(curve_elements)
+print(f"[DONE] Alignment curve report saved to {CURVE_PDF_OUTPUT}")

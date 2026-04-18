@@ -2,6 +2,9 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
+import textwrap
+
+from policy_labels import apply_label, POLICY_LABELS
 
 df = pd.read_csv("./data/policy_documents/policy_keyword_scores_all.csv")
 
@@ -65,8 +68,9 @@ category_df = pd.DataFrame(results)
 category_df = category_df.set_index("document")
 category_df['total'] = category_df.sum(axis=1)
 category_df = category_df.sort_values('total', ascending=False).drop(columns=['total'])
+category_df.index = [textwrap.fill(apply_label(idx), width=25) for idx in category_df.index]
 
-plt.figure(figsize=(12, 14)) # Slightly wider for labels
+plt.figure(figsize=(12, 16)) # Slightly wider for labels
 
 # Use Seaborn for a cleaner look
 # cmap="YlOrRd" is usually better for visibility than "Reds"
@@ -83,8 +87,8 @@ plt.xlabel("Governance Category", fontsize=12)
 plt.ylabel("Policy Document", fontsize=12)
 
 # Rotate labels for readability
-plt.xticks(rotation=45, ha="right")
-plt.yticks(fontsize=7)
+plt.xticks(rotation=45, ha="right", fontsize=12)
+plt.yticks(rotation=0, fontsize=16)
 
 plt.tight_layout()
 plt.savefig("./data/results/policy_category_heatmap.png", dpi=150)
